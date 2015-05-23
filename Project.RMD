@@ -1,0 +1,180 @@
+---
+title: "Practical  Machine Learning - Course Project"
+author: "Brendan Madigan"
+date: "Friday, May 15, 2015"
+output: html_document
+---
+## Overview  
+
+The data to be analysed relates to measurements taken from accelerometers placed on the belt, forearm, arm, and dumbell of 6 participants. These participants  were asked to perform barbell lifts correctly and incorrectly in 5 different ways. The aim of this analysis is to predict the manner in which they performed each exercise.
+
+## Data 
+
+The data is the Weight Lifting Exercise (WLE) Dataset. More information can be found on the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset). 
+ 
+More information may befound here:[Qualitative Activity Recognition of Weight Lifting Exercises](http://groupware.les.inf.puc-rio.br/work.jsf?p1=11201) -  Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013. 
+
+* [Training data](> https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv)   
+* [Test data](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv)
+
+Start by loading required libaries and setting any system variables.
+For information purposes display the start time of the analysis.
+
+```{r, echo=FALSE}
+
+library(caret)
+library(data.table)
+library(reshape2)
+library(ggplot2)
+library(gridExtra)
+library(parallel)
+library(doParallel)
+library(randomForest)
+
+setInternet2(TRUE)
+set.seed(150515)
+
+message(sprintf("PML Analysis started at: %s\nR version: %s", Sys.time(), R.Version()$version.string))
+```
+
+## Background
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website [here:]( http://groupware.les.inf.puc-rio.br/har) (see the section on the Weight Lifting Exercise Dataset). 
+
+## Load the training and test data csv files.  
+
+```{r}
+
+TrainDataURL  <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+TestDataURL   <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+TrainingData  <- fread(TrainDataURL)
+TestingData   <- fread(TestDataURL)
+```
+## Basic Data Analysis
+
+* Display the number of observations in the TrainingData by user_name
+* Produce a basic histogram of the TrainingData on classe and user names
+
+```{r}
+table(TrainingData$user_name)
+qplot(classe, data=TrainingData, fill=user_name)
+
+```
+
+## Clean the data  
+
+Determine Which attributes in the testing data that don't have missing data.
+
+These attributes will then will be used in prediction modelling.
+
+```{r}
+MissingData <- sapply(TestingData, function (x) any(is.na(x) | x == ""))
+PredictionAttributes  <- !MissingData & grepl("belt|arm|dumbbell", names(MissingData))
+                     
+PredictionAttributes  <- names(MissingData)[PredictionAttributes]
+PredictionAttributes
+
+AttributesToInclude   <- c("classe", PredictionAttributes)
+TrainingData          <- TrainingData[, AttributesToInclude, with=FALSE]
+
+TrainingData          <- TrainingData[, classe := factor(TrainingData[, classe])]
+TrainingData[, .N, classe]
+
+PartitionTrainingData <-   createDataPartition(TrainingData$classe, p=0.6)
+DataTraining          <-   TrainingData[ inTrain[[1]]]
+DataTesting           <-   TrainingData[-inTrain[[1]]]
+```
+
+## Centre and scale the data.
+
+```{r}
+X                   <- DataTraining[, PredictionAttributes, with=FALSE]
+preProc             <- preProcess(X)
+preProc
+CentreAndScale      <- predict(preProc, X)
+DataTrainingCS      <- data.table(data.frame(classe = DataTraining[, classe], CentreAndScale))
+
+dim(DataTrainingCS)
+
+CentreAndScale      <- predict(preProc, DataTesting[, PredictionAttributes, with=FALSE])
+DataTestingCS       <- data.table(data.frame(classe = DataTesting[, classe], CentreAndScale))
+
+dim(DataTestingCS)
+```
+
+## Train the prediction model   
+
+* Set up parameters to allow parallel processing    
+* Set the control parameters 
+* Use the Random Forest algoriyhm
+* Fit model over the tuning parameters       
+  
+```{r}
+ctrl          <- trainControl(classProbs     =TRUE,
+                              savePredictions=TRUE,
+                              allowParallel  =TRUE)
+registerDoParallel()
+trainingModel <- train(classe ~ ., data=DataTrainingCS, method="rf")
+trainingModel
+plot(varImp(trainingModel))
+pred          <- predict(trainingModel, newdata=DataTestingCS)
+sum(pred == DataTestingCS$classe) / length(pred)
+
+```
+
+## Use the prediction model on the training data
+
+```{r}
+trainingModel
+PredictionResults <- predict(trainingModel, DataTrainingCS)
+confusionMatrix(PredictionResults, DataTraining[, classe])
+```
+
+## Use the prediction model on the testing data
+
+```{r}
+PredictionResults <- predict(trainingModel, DataTestingCS)
+confusionMatrix(PredictionResults, DataTestingCS[, classe])
+```
+
+## Display the results of final model
+
+```{r finalModel}
+varImp(trainingModel)
+trainingModel$finalModel
+```
+
+## The estimated error rate is less than 1%.       
+
+```{r}
+DataTestingCS       <- predict(preProc, TestingData[, PredictionAttributes, with=FALSE])
+PredictionResults   <- predict(trainingModel, DataTestingCS)
+TestingData         <- cbind(PredictionResults , TestingData)
+
+subset(TestingData, select=names(TestingData)[grep("belt|[^(fore)]arm|dumbbell|forearm", names(TestingData), invert=TRUE)])
+```
+
+## Create the files to be submitted 
+
+Write submission files to `C:\Users\Brendan\DataScienceCourse\Machine Learning`.
+
+```{r}
+ 
+pml_write_files = function(x){
+  n = length(x)
+  path <- "C:/Users/Brendan/DataScienceCourse/Machine Learning"
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=file.path(path, filename),quote=FALSE,row.name=FALSE,col.names=FALSE)
+  }
+}
+pml_write_files(PredictionResults)
+
+```
+
+## Display the end time of the execution  
+
+```{r, echo=FALSE}
+message(sprintf("PML Analysis ended at : %s\nR version: %s", Sys.time(), R.Version()$version.string))
+```
+```
